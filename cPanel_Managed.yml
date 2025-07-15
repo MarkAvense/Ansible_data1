@@ -9,3 +9,10 @@
       name: "*"
       state: latest
       update_cache: yes
+  
+  - name: disalbed firewalld/iptables
+    systemd:
+      name: iptables
+      state: stopped
+      enabled: no
+      ignore_errors: yes
