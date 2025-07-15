@@ -5,7 +5,7 @@
 
   tasks:
   - name: update all existing packages
-    ansible.builtin.yum:
+    dnf:
       name: "*"
       state: latest
       update_cache: yes
