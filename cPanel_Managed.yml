@@ -1,0 +1,11 @@
+---
+- name: cPanel managed VM deployment
+  hosts: all
+  remote_user: root
+
+  tasks:
+  - name: update all existing packages
+    ansible.builtin.yum:
+      name: "*"
+      state: latest
+      update_cache: yes
