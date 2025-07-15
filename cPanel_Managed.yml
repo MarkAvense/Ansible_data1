@@ -5,7 +5,7 @@
 
   tasks:
   - name: update all existing packages
-    dnf:
+    yum:
       name: "*"
       state: latest
       update_cache: yes
