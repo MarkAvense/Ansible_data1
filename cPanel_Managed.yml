@@ -2,6 +2,8 @@
 - name: cPanel managed VM deployment
   hosts: all
   remote_user: root
+  vars:
+    cpanel_installer_url: "https://securedownloads.cpanel.net/latest
 
   tasks:
   - name: update all existing packages
@@ -15,4 +17,27 @@
       name: iptables
       state: stopped
       enabled: no
-    
+  
+  - name: Ensure wget is installed
+    dnf:
+      name: wget
+      state: present
+  - name: Download cPanel installer
+    get_url:
+      url: "{{ cpanel_installer_url }}"
+      dest: /home/install_cpanel.sh
+      mode: '0755'
+
+  - name: Run cPanel installer (this may take up to 40 minutes)
+    shell: "/home/install_cpanel.sh"
+    async: 3600
+    poll: 0
+    register: cpanel_install_job
+
+  - name: Wait for cPanel installer to complete
+    async_status:
+    jid: "{{ cpanel_install_job.ansible_job_id }}"
+    register: job_result
+    until: job_result.finished
+    retries: 300
+    delay: 30 
