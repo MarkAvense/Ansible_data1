@@ -22,6 +22,7 @@
     dnf:
       name: wget
       state: present
+      
   - name: Download cPanel installer
     get_url:
       url: "{{ cpanel_installer_url }}"
