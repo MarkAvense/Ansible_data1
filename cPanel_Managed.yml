@@ -17,8 +17,19 @@
       enabled: no
   
   - name: Ensure wget is installed
-    dnf:
-      name: wget
+    yum:
+      name: curl
       state: present
       
+  - name: Download cPanel installer
+    ansible.builtin.get_url:
+      url: https://securedownloads.cpanel.net/latest
+      dest: /home/latest
+      mode: '0755'
+
+  - name: Run cPanel installer
+    ansible.builtin.shell: |
+      sh /home/latest
+    args:
+      chdir: /home      
 
