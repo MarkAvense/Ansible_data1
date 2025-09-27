@@ -1,0 +1,59 @@
+---
+- name: Change Windows RDP port to 26872 and update firewall
+  hosts: windows
+  gather_facts: no
+  vars:
+    rdp_new_port: 26872
+  tasks:
+
+    - name: Ensure RDP port registry value is set
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp
+        name: PortNumber
+        data: "{{ rdp_new_port }}"
+        type: dword
+      register: reg_result
+
+    - name: Add Windows Firewall rule to allow the new RDP port
+      ansible.windows.win_firewall_rule:
+        name: "Custom RDP Port {{ rdp_new_port }}"
+        enable: yes
+        direction: in
+        action: allow
+        protocol: tcp
+        localport: "{{ rdp_new_port }}"
+        profile: any
+      register: fw_result
+
+    - name: (Optional) Disable default built-in Remote Desktop firewall rules that open port 3389
+      # Uncomment and customize only if you want to disable the default RDP rules.
+      # Use with caution: this may close the original 3389 port and drop connections that expect it.
+      ansible.windows.win_firewall_rule:
+        name: "Remote Desktop - User Mode (TCP-In)"
+        enabled: no
+      ignore_errors: yes
+      when: false
+
+    - name: Restart Remote Desktop Service (TermService) to apply new port
+      ansible.windows.win_service:
+        name: TermService
+        state: restarted
+      register: termservice_result
+      # restarting TermService will drop RDP connections
+
+    - name: Wait for new RDP port to be reachable (control machine -> target)
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: "{{ rdp_new_port }}"
+        timeout: 60
+        state: started
+      register: wait_result
+      ignore_errors: yes
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "Registry changed: {{ reg_result.changed | default(false) }}"
+          - "Firewall rule created/changed: {{ fw_result.changed | default(false) }}"
+          - "TermService restarted: {{ termservice_result.changed | default(false) }}"
+          - "Wait for port result: {{ wait_result.elapsed | default('n/a') }} seconds (may be 'n/a' if wait timed out or was skipped)"
