@@ -1,59 +1,138 @@
 ---
-- name: Change Windows RDP port to 26872 and update firewall
+- name: Change RDP port on Windows
   hosts: windows
   gather_facts: no
+  collections:
+    - ansible.windows
+    - community.windows
+
   vars:
     rdp_new_port: 26872
-  tasks:
+    defender_action: "disable"
+  vars_prompt:
+    - name: new_hostname
+      prompt: "Enter the new hostname for this Windows server"
+      private: no   # show input while typing (set to yes if you want hidden)
 
-    - name: Ensure RDP port registry value is set
-      ansible.windows.win_regedit:
+  tasks:
+    - name: Set RDP port in registry
+      win_regedit:
         path: HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp
         name: PortNumber
         data: "{{ rdp_new_port }}"
         type: dword
-      register: reg_result
 
-    - name: Add Windows Firewall rule to allow the new RDP port
-      ansible.windows.win_firewall_rule:
+    - name: Add Windows Firewall rule for new RDP port
+      win_firewall_rule:
         name: "Custom RDP Port {{ rdp_new_port }}"
         enable: yes
         direction: in
         action: allow
         protocol: tcp
         localport: "{{ rdp_new_port }}"
-        profile: any
-      register: fw_result
+        profile: Domain,Private,Public
 
-    - name: (Optional) Disable default built-in Remote Desktop firewall rules that open port 3389
-      # Uncomment and customize only if you want to disable the default RDP rules.
-      # Use with caution: this may close the original 3389 port and drop connections that expect it.
-      ansible.windows.win_firewall_rule:
-        name: "Remote Desktop - User Mode (TCP-In)"
-        enabled: no
-      ignore_errors: yes
-      when: false
-
-    - name: Restart Remote Desktop Service (TermService) to apply new port
-      ansible.windows.win_service:
-        name: TermService
-        state: restarted
-      register: termservice_result
-      # restarting TermService will drop RDP connections
-
-    - name: Wait for new RDP port to be reachable (control machine -> target)
-      wait_for:
-        host: "{{ inventory_hostname }}"
-        port: "{{ rdp_new_port }}"
-        timeout: 60
-        state: started
-      register: wait_result
+    - name: Restart RDP service safely to apply new port
+      win_shell: Restart-Service -Name TermService -Force
+    
+    - name: Attempt to remove Windows Defender feature (Server only)
+      win_feature:
+        name: Windows-Defender-Features
+        state: absent
+        include_management_tools: no
+      when:
+        - defender_action == "remove"
+      register: remove_defender_result
       ignore_errors: yes
 
-    - name: Show summary
-      ansible.builtin.debug:
-        msg:
-          - "Registry changed: {{ reg_result.changed | default(false) }}"
-          - "Firewall rule created/changed: {{ fw_result.changed | default(false) }}"
-          - "TermService restarted: {{ termservice_result.changed | default(false) }}"
-          - "Wait for port result: {{ wait_result.elapsed | default('n/a') }} seconds (may be 'n/a' if wait timed out or was skipped)"
+    - name: Fallback - also try feature name "Windows-Defender"
+      win_feature:
+        name: Windows-Defender
+        state: absent
+      when:
+        - defender_action == "remove"
+        - remove_defender_result is failed
+      register: remove_defender_result_2
+      ignore_errors: yes
+
+    - name: Install .NET Framework 3.5 and activation features
+      win_feature:
+        name:
+          - NET-Framework-Core         # .NET Framework 3.5 core
+          - NET-HTTP-Activation        # HTTP Activation
+          - NET-Non-HTTP-Activ 
+        state: present
+        include_management_tools: yes
+      register: dotnet_features
+
+    - name: Disable File and Printer Sharing (ms_server) on all adapters
+      win_shell: |
+        Get-NetAdapterBinding -ComponentID ms_server |
+          Where-Object { $_.Enabled -eq $true } |
+          ForEach-Object {
+            Disable-NetAdapterBinding -Name $_.Name -ComponentID ms_server -Confirm:$false
+          }
+      register: disable_fps
+
+    - name: Show results
+      debug:
+        var: disable_fps.stdout
+
+    - name: Show the hostname provided
+      debug:
+        msg: "You entered: {{ new_hostname }}"
+
+    - name: Set Windows hostname
+      win_hostname:
+        name: "{{ new_hostname }}"
+      register: rename_result
+
+    - name: Rename built-in Administrator user to acadmin
+      win_shell: |
+        $user = Get-LocalUser -Name "Administrator" -ErrorAction SilentlyContinue
+        if ($user) {
+          Rename-LocalUser -Name "Administrator" -NewName "acadmin"
+          Write-Output "Renamed"
+        } else {
+          Write-Output "Already renamed or not found"
+        }
+      register: rename_result
+
+    - name: Debug rename result
+      debug:
+        var: rename_result.stdout
+
+    - name: Change VZTOOLS-WIN volume letter from D to E
+      win_powershell:
+        script: |
+          $vol = Get-Volume -FileSystemLabel "VZTOOLS-WIN" -ErrorAction SilentlyContinue
+          if ($vol -and $vol.DriveLetter -eq 'D') {
+            $part = Get-Partition -DriveLetter D
+            if ($part) { Set-Partition -DriveLetter D -NewDriveLetter E -PartitionNumber $part.PartitionNumber -DiskNumber $part.DiskNumber }
+          }
+
+    - name: Bring Disk 1 online
+      win_powershell:
+        script: |
+          $disk = Get-Disk -Number 1 -ErrorAction SilentlyContinue
+          if ($disk) {
+            if ($disk.IsOffline) { Set-Disk -Number 1 -IsOffline $false }
+            if ($disk.IsReadOnly) { Set-Disk -Number 1 -IsReadOnly $false }
+            if ($disk.PartitionStyle -eq 'RAW') { Initialize-Disk -Number 1 -PartitionStyle GPT }
+          }
+
+    - name: Create new partition on Disk 1 and assign D
+      win_powershell:
+        script: |
+          $part = Get-Partition -DiskNumber 1 -ErrorAction SilentlyContinue | Where-Object DriveLetter -eq 'D'
+          if (-not $part) {
+            New-Partition -DiskNumber 1 -UseMaximumSize -DriveLetter D | Out-Null
+            Format-Volume -DriveLetter D -FileSystem NTFS -NewFileSystemLabel "Data" -Confirm:$false
+          }
+
+    - name: Reboot the server
+      win_reboot:
+        msg: "Reboot initiated by Ansible playbook"
+        reboot_timeout: 600   # seconds
+
+
